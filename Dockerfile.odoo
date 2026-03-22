@@ -1,0 +1,10 @@
+FROM odoo:16
+
+USER root
+
+RUN pip3 install --no-cache-dir \
+    prestapyt \
+    python-dateutil \
+    requests
+
+USER odoo

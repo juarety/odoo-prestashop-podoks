@@ -1,0 +1,20 @@
+<odoo>
+  <data noupdate="1">
+    <record id="ir_cron_prestashop_sync" model="ir.cron">
+      <field name="name">Sincronización PrestaShop - Odoo</field>
+      <field name="model_id" ref="prestashop_connector.model_prestashop_sync"/>
+      <field name="state">code</field>
+      <field name="code">
+          model.pull_stock_from_prestashop()
+          model.sync_products()
+          model.sync_orders()
+          model.sync_order_lines()
+          model.push_stock_to_prestashop()  
+      </field>
+      <field name="interval_number">5</field>
+      <field name="interval_type">minutes</field>
+      <field name="numbercall">-1</field>
+      <field name="active">1</field>
+    </record>
+  </data>
+</odoo>

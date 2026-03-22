@@ -1,0 +1,72 @@
+services:
+
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: odoo
+      POSTGRES_PASSWORD: odoo
+      POSTGRES_DB: postgres
+    volumes:
+      - odoo-db-data:/var/lib/postgresql/data
+    networks: 
+      - app-network
+
+  odoo:
+    build:
+      context: .
+      dockerfile: Dockerfile.odoo
+    depends_on:
+      - postgres
+    ports:
+      - "8069:8069"
+    environment:
+      - HOST=postgres
+      - USER=odoo
+      - PASSWORD=odoo
+    volumes:
+      - ./odoo-custom-addons:/mnt/extra-addons
+      - ./odoo.conf:/etc/odoo/odoo.conf
+    networks:
+      - app-network
+
+  prestashop-db:
+    image: mysql:5.7
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: prestashop
+      MYSQL_USER: prestashop
+      MYSQL_PASSWORD: prestashop
+    volumes:
+      - prestashop-db-data:/var/lib/mysql
+    networks:
+      - app-network
+
+  prestashop:
+    image: prestashop/prestashop
+    depends_on:
+      - prestashop-db
+    ports:
+      - "8080:80"
+    environment:
+      DB_SERVER: prestashop-db
+      DB_NAME: prestashop
+      DB_USER: prestashop
+      DB_PASSWD: prestashop
+      PS_INSTALL_AUTO: 1     
+      PS_DOMAIN: localhost:8080
+      PS_ENABLE_SSL: 0
+      ADMIN_MAIL: admin@test.com
+      ADMIN_PASSWD: adminpassword
+    volumes:
+      - prestashop-data:/var/www/html
+    networks:
+      - app-network
+
+volumes:
+  odoo-db-data:
+  prestashop-db-data:
+  prestashop-data:
+
+networks:
+  app-network:
+    driver: bridge
