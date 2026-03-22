@@ -255,21 +255,24 @@ class PrestashopSync(models.Model):
 
     @api.model
     def push_odoo_products(self):
-        odoo_products = self.env["product.template"].search([])
+        resp = self._ps_request('GET', '/products', params={
+            'output_format': 'JSON',
+            'display': 'full'
+        })
+        result = resp.json()
+        ps_names = set()
+        if isinstance(result, dict) and result.get('products'):
+            for p in result['products']:
+                ps_names.add(p.get('name', '').lower().strip())
+
+        odoo_products = self.env['product.template'].search([
+            ('x_prestashop_id', '=', False)
+        ])
         for product in odoo_products:
-            check = self._ps_request(
-                "GET",
-                "/products",
-                params={
-                    "output_format": "JSON",
-                    "display": "full",
-                    "filter[name]": product.name,
-                },
-            )
-            result = check.json()
-            if isinstance(result, dict) and result.get("products"):
+            if product.name.lower().strip() in ps_names:
                 continue
-            self._push_product_to_prestashop(product)
+            status = self._push_product_to_prestashop(product)
+            print(f"'{product.name}': {status}")
         return True
 
     @api.model

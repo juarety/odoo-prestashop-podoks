@@ -57,6 +57,7 @@ services:
       PS_ENABLE_SSL: 0
       ADMIN_MAIL: admin@test.com
       ADMIN_PASSWD: adminpassword
+      PS_FOLDER_ADMIN: admin
     volumes:
       - prestashop-data:/var/www/html
     networks:
