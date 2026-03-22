@@ -9,20 +9,10 @@ docker compose up --build -d
 
 echo.
 echo Esperando a que los servicios arranquen (60 segundos)...
-timeout /t 60 /nobreak > nul
-
-echo.
-echo Configurando PrestaShop...
-docker exec odoo-prestashop-podoks-prestashop-db-1 mysql -u root -proot prestashop -e "UPDATE ps_webservice_account SET key_value = '9BD4XS8X7IJASRI412JST3EIIBT43RKP' WHERE id_webservice_account = 1; UPDATE ps_configuration SET value = '1' WHERE name = 'PS_WEBSERVICE'; UPDATE ps_configuration SET value = 'localhost:8080' WHERE name IN ('PS_SHOP_DOMAIN', 'PS_SHOP_DOMAIN_SSL');"
-
-echo Configurando permisos de la API key...
-docker exec odoo-prestashop-podoks-prestashop-db-1 mysql -u root -proot prestashop -e "SET @id = (SELECT id_webservice_account FROM ps_webservice_account WHERE key_value = '9BD4XS8X7IJASRI412JST3EIIBT43RKP'); DELETE FROM ps_webservice_account_permissions WHERE id_webservice_account = @id; INSERT INTO ps_webservice_account_permissions (id_webservice_account, resource, method) VALUES (@id, 'products', 'GET'), (@id, 'products', 'POST'), (@id, 'products', 'PUT'), (@id, 'products', 'DELETE'), (@id, 'orders', 'GET'), (@id, 'orders', 'PUT'), (@id, 'customers', 'GET'), (@id, 'stock_availables', 'GET'), (@id, 'stock_availables', 'PUT');"
+timeout /t 100 /nobreak > nul
 
 echo Activando metodo de pago...
 docker exec odoo-prestashop-podoks-prestashop-db-1 mysql -u root -proot prestashop -e "UPDATE ps_module SET active = 1 WHERE name = 'ps_wirepayment';"
-
-echo Fijando carpeta admin...
-docker exec odoo-prestashop-podoks-prestashop-db-1 mysql -u root -proot prestashop -e "UPDATE ps_configuration SET value = 'admin' WHERE name = 'PS_ADMIN_FOLDER';"
 
 echo Reiniciando PrestaShop...
 docker compose restart prestashop

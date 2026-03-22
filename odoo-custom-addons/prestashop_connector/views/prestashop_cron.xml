@@ -5,11 +5,12 @@
       <field name="model_id" ref="prestashop_connector.model_prestashop_sync"/>
       <field name="state">code</field>
       <field name="code">
-model.pull_stock_from_prestashop()
-model.sync_products()
-model.sync_orders()
-model.sync_order_lines()
-model.push_stock_to_prestashop()  
+model.sync_products()          
+model.push_odoo_products()     
+model.pull_stock_from_prestashop()  
+model.push_stock_to_prestashop()    
+model.sync_orders()            
+model.sync_order_lines() 
       </field>
       <field name="interval_number">5</field>
       <field name="interval_type">minutes</field>

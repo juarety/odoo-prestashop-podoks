@@ -45,11 +45,20 @@ class PrestashopSync(models.Model):
         for ps_product in products:
             name = ps_product.get("name", "Sin nombre")
             price = float(ps_product.get("price", 0))
-            if not self.env["product.template"].search([("name", "=", name)], limit=1):
+            ps_id = str(ps_product.get("id", ""))
+
+            existing = self.env["product.template"].search(
+                ["|", ("x_prestashop_id", "=", ps_id), ("name", "=", name)], limit=1
+            )
+            if existing:
+                if not existing.x_prestashop_id:
+                    existing.write({"x_prestashop_id": ps_id})
+            else:
                 self.env["product.template"].create(
                     {
                         "name": name,
                         "list_price": price,
+                        "x_prestashop_id": ps_id,
                     }
                 )
         return True
@@ -61,9 +70,9 @@ class PrestashopSync(models.Model):
                 <active>1</active>
                 <state>1</state>
                 <price>{product.list_price:.6f}</price>
-                <name>
+                <n>
                 <language id="1"><![CDATA[{product.name}]]></language>
-                </name>
+                </n>
                 <description>
                 <language id="1"><![CDATA[]]></language>
                 </description>
@@ -91,6 +100,127 @@ class PrestashopSync(models.Model):
             except Exception:
                 pass
         return resp.status_code
+
+    @api.model
+    def push_odoo_products(self):
+        resp = self._ps_request(
+            "GET", "/products", params={"output_format": "JSON", "display": "full"}
+        )
+        result = resp.json()
+        ps_names = set()
+        if isinstance(result, dict) and result.get("products"):
+            for p in result["products"]:
+                ps_names.add(p.get("name", "").lower().strip())
+
+        odoo_products = self.env["product.template"].search(
+            [("x_prestashop_id", "=", False)]
+        )
+        for product in odoo_products:
+            if product.name.lower().strip() in ps_names:
+                continue
+            status = self._push_product_to_prestashop(product)
+            print(f"'{product.name}': {status}")
+        return True
+
+    @api.model
+    def pull_stock_from_prestashop(self):
+        products = self.env["product.template"].search(
+            [("x_prestashop_id", "!=", False)]
+        )
+        for product in products:
+            ps_id = product.x_prestashop_id
+            resp = self._ps_request(
+                "GET",
+                "/stock_availables",
+                params={
+                    "output_format": "JSON",
+                    "display": "full",
+                    "filter[id_product]": ps_id,
+                    "filter[id_product_attribute]": "0",
+                },
+            )
+            result = resp.json()
+            if not isinstance(result, dict) or not result.get("stock_availables"):
+                continue
+            ps_qty = int(result["stock_availables"][0]["quantity"])
+            odoo_qty = int(product.qty_available)
+            last_known = product.x_prestashop_stock or 0
+
+            if ps_qty < last_known:
+                diff = last_known - ps_qty
+                product_product = self.env["product.product"].search(
+                    [("product_tmpl_id", "=", product.id)], limit=1
+                )
+                if not product_product:
+                    continue
+                inventory = self.env["stock.quant"].search(
+                    [
+                        ("product_id", "=", product_product.id),
+                        ("location_id.usage", "=", "internal"),
+                    ],
+                    limit=1,
+                )
+                if inventory:
+                    new_qty = max(0, inventory.quantity - diff)
+                    inventory.sudo().write({"inventory_quantity": new_qty})
+                    inventory.sudo().action_apply_inventory()
+                    print(f"Venta PS detectada '{product.name}': -{diff} uds")
+
+            product.write({"x_prestashop_stock": ps_qty})
+        return True
+
+    @api.model
+    def push_stock_to_prestashop(self):
+        products = self.env["product.template"].search(
+            [("x_prestashop_id", "!=", False)]
+        )
+
+        for product in products:
+            ps_id = product.x_prestashop_id
+            odoo_qty = int(product.qty_available)
+
+            resp = self._ps_request(
+                "GET",
+                "/stock_availables",
+                params={
+                    "output_format": "JSON",
+                    "display": "full",
+                    "filter[id_product]": ps_id,
+                    "filter[id_product_attribute]": "0",
+                },
+            )
+
+            result = resp.json()
+            if not isinstance(result, dict) or not result.get("stock_availables"):
+                continue
+
+            stock_data = result["stock_availables"][0]
+            stock_id = stock_data["id"]
+
+            xml_data = f"""<?xml version="1.0" encoding="UTF-8"?>
+                <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
+                <stock_available>
+                    <id>{stock_id}</id>
+                    <id_product>{ps_id}</id_product>
+                    <id_product_attribute>0</id_product_attribute>
+                    <id_shop>{stock_data['id_shop']}</id_shop>
+                    <id_shop_group>{stock_data['id_shop_group']}</id_shop_group>
+                    <quantity>{odoo_qty}</quantity>
+                    <depends_on_stock>{stock_data['depends_on_stock']}</depends_on_stock>
+                    <out_of_stock>{stock_data['out_of_stock']}</out_of_stock>
+                </stock_available>
+                </prestashop>"""
+
+            resp = self._ps_request(
+                "PUT",
+                f"/stock_availables/{stock_id}",
+                headers={"Content-Type": "application/xml"},
+                data=xml_data.encode("utf-8"),
+            )
+            print(
+                f"Stock '{product.name}': {odoo_qty} uds → PS status {resp.status_code}"
+            )
+        return True
 
     @api.model
     def sync_orders(self):
@@ -198,7 +328,7 @@ class PrestashopSync(models.Model):
         odoo_orders = self.env["sale.order"].search(
             [
                 ("x_prestashop_order_id", "!=", False),
-                ("state", "in", ["draft", "sent"]),  
+                ("state", "in", ["draft", "sent"]),
             ]
         )
 
@@ -253,76 +383,6 @@ class PrestashopSync(models.Model):
 
         return True
 
-    @api.model
-    def push_odoo_products(self):
-        resp = self._ps_request('GET', '/products', params={
-            'output_format': 'JSON',
-            'display': 'full'
-        })
-        result = resp.json()
-        ps_names = set()
-        if isinstance(result, dict) and result.get('products'):
-            for p in result['products']:
-                ps_names.add(p.get('name', '').lower().strip())
-
-        odoo_products = self.env['product.template'].search([
-            ('x_prestashop_id', '=', False)
-        ])
-        for product in odoo_products:
-            if product.name.lower().strip() in ps_names:
-                continue
-            status = self._push_product_to_prestashop(product)
-            print(f"'{product.name}': {status}")
-        return True
-
-    @api.model
-    def pull_stock_from_prestashop(self):
-
-        products = self.env["product.template"].search(
-            [("x_prestashop_id", "!=", False)]
-        )
-        for product in products:
-            ps_id = product.x_prestashop_id
-            resp = self._ps_request(
-                "GET",
-                "/stock_availables",
-                params={
-                    "output_format": "JSON",
-                    "display": "full",
-                    "filter[id_product]": ps_id,
-                    "filter[id_product_attribute]": "0",
-                },
-            )
-            result = resp.json()
-            if not isinstance(result, dict) or not result.get("stock_availables"):
-                continue
-            ps_qty = int(result["stock_availables"][0]["quantity"])
-            odoo_qty = int(product.qty_available)
-            last_known = product.x_prestashop_stock or 0
-            
-            if ps_qty < last_known:
-                diff = last_known - ps_qty
-                product_product = self.env["product.product"].search(
-                    [("product_tmpl_id", "=", product.id)], limit=1
-                )
-                if not product_product:
-                    continue
-                inventory = self.env["stock.quant"].search(
-                    [
-                        ("product_id", "=", product_product.id),
-                        ("location_id.usage", "=", "internal"),
-                    ],
-                    limit=1,
-                )
-                if inventory:
-                    new_qty = max(0, inventory.quantity - diff)
-                    inventory.sudo().write({"inventory_quantity": new_qty})
-                    inventory.sudo().action_apply_inventory()
-                    print(f"Venta PS detectada '{product.name}': -{diff} uds")
-
-            product.write({"x_prestashop_stock": ps_qty})
-        return True
-
     class ProductTemplate(models.Model):
         _inherit = "product.template"
 
@@ -339,59 +399,6 @@ class PrestashopSync(models.Model):
                     except Exception:
                         pass
             return records
-
-    @api.model
-    def push_stock_to_prestashop(self):
-        products = self.env["product.template"].search(
-            [("x_prestashop_id", "!=", False)]
-        )
-
-        for product in products:
-            ps_id = product.x_prestashop_id
-            odoo_qty = int(product.qty_available)
-
-            resp = self._ps_request(
-                "GET",
-                "/stock_availables",
-                params={
-                    "output_format": "JSON",
-                    "display": "full",
-                    "filter[id_product]": ps_id,
-                    "filter[id_product_attribute]": "0",
-                },
-            )
-
-            result = resp.json()
-            if not isinstance(result, dict) or not result.get("stock_availables"):
-                continue
-
-            stock_data = result["stock_availables"][0]
-            stock_id = stock_data["id"]
-
-            xml_data = f"""<?xml version="1.0" encoding="UTF-8"?>
-                <prestashop xmlns:xlink="http://www.w3.org/1999/xlink">
-                <stock_available>
-                    <id>{stock_id}</id>
-                    <id_product>{ps_id}</id_product>
-                    <id_product_attribute>0</id_product_attribute>
-                    <id_shop>{stock_data['id_shop']}</id_shop>
-                    <id_shop_group>{stock_data['id_shop_group']}</id_shop_group>
-                    <quantity>{odoo_qty}</quantity>
-                    <depends_on_stock>{stock_data['depends_on_stock']}</depends_on_stock>
-                    <out_of_stock>{stock_data['out_of_stock']}</out_of_stock>
-                </stock_available>
-                </prestashop>"""
-
-            resp = self._ps_request(
-                "PUT",
-                f"/stock_availables/{stock_id}",
-                headers={"Content-Type": "application/xml"},
-                data=xml_data.encode("utf-8"),
-            )
-            print(
-                f"Stock '{product.name}': {odoo_qty} uds → PS status {resp.status_code}"
-            )
-        return True
 
     class SaleOrder(models.Model):
         _inherit = "sale.order"
